@@ -1,16 +1,16 @@
+#include <algorithm>
 #include <iostream>
 #include <set>
 #include <sstream>
-#include <algorithm>
 
 #include "Lower.h"
 
 #include "AddImageChecks.h"
 #include "AddParameterChecks.h"
 #include "AllocationBoundsInference.h"
+#include "BoundSmallAllocations.h"
 #include "Bounds.h"
 #include "BoundsInference.h"
-#include "BoundSmallAllocations.h"
 #include "CSE.h"
 #include "CanonicalizeGPUVars.h"
 #include "Debug.h"
@@ -24,13 +24,13 @@
 #include "FuseGPUThreadLoops.h"
 #include "FuzzFloatStores.h"
 #include "HexagonOffload.h"
+#include "IRMutator.h"
+#include "IROperator.h"
+#include "IRPrinter.h"
 #include "InferArguments.h"
 #include "InjectHostDevBufferCopies.h"
 #include "InjectOpenGLIntrinsics.h"
 #include "Inline.h"
-#include "IRMutator.h"
-#include "IROperator.h"
-#include "IRPrinter.h"
 #include "LICM.h"
 #include "LoopCarry.h"
 #include "LowerWarpShuffles.h"
@@ -45,13 +45,14 @@
 #include "RemoveUndef.h"
 #include "ScheduleFunctions.h"
 #include "SelectGPUAPI.h"
-#include "SkipStages.h"
-#include "SlidingWindow.h"
 #include "Simplify.h"
 #include "SimplifySpecializations.h"
+#include "SkipStages.h"
+#include "SlidingWindow.h"
 #include "SplitTuples.h"
 #include "StorageFlattening.h"
 #include "StorageFolding.h"
+#include "StrictifyFloat.h"
 #include "Substitute.h"
 #include "Tracing.h"
 #include "TrimNoOps.h"
@@ -67,11 +68,11 @@
 namespace Halide {
 namespace Internal {
 
-using std::set;
+using std::map;
 using std::ostringstream;
+using std::set;
 using std::string;
 using std::vector;
-using std::map;
 
 Module lower(const vector<Function> &output_funcs, const string &pipeline_name, const Target &t,
              const vector<Argument> &args, const LinkageType linkage_type,
@@ -90,6 +91,9 @@ Module lower(const vector<Function> &output_funcs, const string &pipeline_name, 
     // Create a deep-copy of the entire graph of Funcs.
     vector<Function> outputs;
     std::tie(outputs, env) = deep_copy(output_funcs, env);
+
+    bool any_strict_float = strictify_float(env, t);
+    result_module.set_any_strict_float(any_strict_float);
 
     // Output functions should all be computed and stored at root.
     for (Function f: outputs) {
@@ -454,5 +458,5 @@ Stmt lower_main_stmt(const std::vector<Function> &output_funcs, const std::strin
     return module.functions().front().body;
 }
 
-}
-}
+}  // namespace Internal
+}  // namespace Halide

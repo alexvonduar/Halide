@@ -95,10 +95,7 @@ template<> inline double div_imp<double>(double a, double b) {
     return a/b;
 }
 
-
-void simplify_test();
-
-}
-}
+}  // namespace Internal
+}  // namespace Halide
 
 #endif

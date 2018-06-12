@@ -14,7 +14,7 @@ namespace Internal {
 struct Interval {
 
     /** Exprs to represent positive and negative infinity */
-    static Expr pos_inf, neg_inf;
+    HALIDE_EXPORT static Expr pos_inf, neg_inf;
 
     /** The lower and upper bound of the interval. They are included
      * in the interval. */
@@ -86,7 +86,7 @@ struct Interval {
 
 void interval_test();
 
-}
-}
+}  // namespace Internal
+}  // namespace Halide
 
 #endif

@@ -1,27 +1,27 @@
 #include <iostream>
 #include <limits>
-#include <sstream>
 #include <mutex>
+#include <sstream>
 
-#include "CodeGen_LLVM.h"
+#include "CPlusPlusMangle.h"
+#include "CSE.h"
 #include "CodeGen_ARM.h"
 #include "CodeGen_GPU_Host.h"
 #include "CodeGen_Hexagon.h"
 #include "CodeGen_Internal.h"
+#include "CodeGen_LLVM.h"
 #include "CodeGen_MIPS.h"
 #include "CodeGen_PowerPC.h"
 #include "CodeGen_X86.h"
-#include "CPlusPlusMangle.h"
-#include "CSE.h"
 #include "Debug.h"
 #include "Deinterleave.h"
-#include "IntegerDivisionTable.h"
-#include "IRPrinter.h"
 #include "IROperator.h"
+#include "IRPrinter.h"
+#include "IntegerDivisionTable.h"
 #include "JITModule.h"
-#include "Lerp.h"
 #include "LLVM_Headers.h"
 #include "LLVM_Runtime_Linker.h"
+#include "Lerp.h"
 #include "MatlabWrapper.h"
 #include "Simplify.h"
 #include "Util.h"
@@ -44,14 +44,14 @@ std::unique_ptr<llvm::Module> codegen_llvm(const Module &module, llvm::LLVMConte
 namespace Internal {
 
 using namespace llvm;
-using std::ostringstream;
 using std::cout;
 using std::endl;
+using std::map;
+using std::ostringstream;
+using std::pair;
+using std::stack;
 using std::string;
 using std::vector;
-using std::pair;
-using std::map;
-using std::stack;
 
 // Define a local empty inline function for each target
 // to disable initialization.
@@ -157,6 +157,8 @@ CodeGen_LLVM::CodeGen_LLVM(Target t) :
     builder(nullptr),
     value(nullptr),
     very_likely_branch(nullptr),
+    default_fp_math_md(nullptr),
+    strict_fp_math_md(nullptr),
     target(t),
     void_t(nullptr), i1_t(nullptr), i8_t(nullptr),
     i16_t(nullptr), i32_t(nullptr), i64_t(nullptr),
@@ -256,7 +258,8 @@ CodeGen_LLVM::CodeGen_LLVM(Target t) :
 
     min_f64(Float(64).min()),
     max_f64(Float(64).max()),
-    destructor_block(nullptr) {
+    destructor_block(nullptr),
+    strict_float(t.has_feature(Target::StrictFloat)) {
     initialize_llvm();
 }
 
@@ -378,6 +381,23 @@ void CodeGen_LLVM::init_context() {
     // Branch weights for very likely branches
     llvm::MDBuilder md_builder(*context);
     very_likely_branch = md_builder.createBranchWeights(1 << 30, 0);
+    default_fp_math_md = md_builder.createFPMath(0.0);
+    strict_fp_math_md = md_builder.createFPMath(0.0);
+    builder->setDefaultFPMathTag(default_fp_math_md);
+    llvm::FastMathFlags fast_flags;
+    fast_flags.setNoNaNs();
+    fast_flags.setNoInfs();
+    fast_flags.setNoSignedZeros();
+    // Don't use approximate reciprocals for division. It's too inaccurate even for Halide.
+    // fast_flags.setAllowReciprocal();
+    #if LLVM_VERSION >= 60
+    // Theoretically, setAllowReassoc could be setUnsafeAlgebra for earlier versions, but that
+    // turns on all the flags.
+    fast_flags.setAllowReassoc();
+    fast_flags.setAllowContract(true);
+    fast_flags.setApproxFunc();
+    #endif
+    builder->setFastMathFlags(fast_flags);
 
     // Define some types
     void_t = llvm::Type::getVoidTy(*context);
@@ -500,6 +520,7 @@ std::unique_ptr<llvm::Module> CodeGen_LLVM::compile(const Module &input) {
     module->addModuleFlag(llvm::Module::Warning, "halide_use_soft_float_abi", use_soft_float_abi() ? 1 : 0);
     module->addModuleFlag(llvm::Module::Warning, "halide_mcpu", MDString::get(*context, mcpu()));
     module->addModuleFlag(llvm::Module::Warning, "halide_mattrs", MDString::get(*context, mattrs()));
+    module->addModuleFlag(llvm::Module::Warning, "halide_per_instruction_fast_math_flags", input.any_strict_float());
 
     internal_assert(module && context && builder)
         << "The CodeGen_LLVM subclass should have made an initial module before calling CodeGen_LLVM::compile\n";
@@ -1050,12 +1071,52 @@ void CodeGen_LLVM::optimize_module() {
     }
 #endif
 
+    if (get_target().has_feature(Target::ASAN)) {
+        auto addAddressSanitizerPasses = [](const PassManagerBuilder &builder, legacy::PassManagerBase &pm) {
+            constexpr bool compile_kernel = false;   // always false for user code
+            constexpr bool recover = false;          // -fsanitize-recover, always false here
+
+            constexpr bool use_after_scope = false;  // enable -fsanitize-address-use-after-scope?
+            pm.add(createAddressSanitizerFunctionPass(compile_kernel, recover, use_after_scope));
+
+            constexpr bool use_globals_gc = false;  // Should ASan use GC-friendly instrumentation for globals?
+            pm.add(createAddressSanitizerModulePass(compile_kernel, recover, use_globals_gc));
+        };
+        b.addExtension(PassManagerBuilder::EP_OptimizerLast, addAddressSanitizerPasses);
+        b.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0, addAddressSanitizerPasses);
+    }
+
+    if (get_target().has_feature(Target::TSAN)) {
+        auto addThreadSanitizerPass = [](const PassManagerBuilder &builder, legacy::PassManagerBase &pm) {
+            pm.add(createThreadSanitizerPass());
+        };
+        b.addExtension(PassManagerBuilder::EP_OptimizerLast, addThreadSanitizerPass);
+        b.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0, addThreadSanitizerPass);
+    }
+
     b.populateFunctionPassManager(function_pass_manager);
     b.populateModulePassManager(module_pass_manager);
 
     // Run optimization passes
     function_pass_manager.doInitialization();
     for (llvm::Module::iterator i = module->begin(); i != module->end(); i++) {
+        if (get_target().has_feature(Target::ASAN)) {
+            i->addFnAttr(Attribute::SanitizeAddress);
+        }
+        if (get_target().has_feature(Target::TSAN)) {
+            // Do not annotate any of Halide's low-level synchronization code as it has
+            // tsan interface calls to mark its behavior and is much faster if
+            // it is not analyzed instruction by instruction.
+            if (!(i->getName().startswith("_ZN6Halide7Runtime8Internal15Synchronization") ||
+                  // TODO: this is a benign data race that re-initializes the detected features;
+                  // we should really fix it properly inside the implementation, rather than disabling
+                  // it here as a band-aid.
+                  i->getName().startswith("halide_default_can_use_target_features") ||
+                  i->getName().startswith("halide_mutex_") ||
+                  i->getName().startswith("halide_cond_"))) {
+                i->addFnAttr(Attribute::SanitizeThread);
+            }
+        }
         function_pass_manager.run(*i);
     }
     function_pass_manager.doFinalization();
@@ -1673,7 +1734,9 @@ void CodeGen_LLVM::visit(const Load *op) {
             bool external = op->param.defined() || op->image.defined();
 
             // Don't read beyond the end of an external buffer.
-            if (external) {
+            // (In ASAN mode, don't read beyond the end of internal buffers either,
+            // as ASAN will complain even about harmless stack overreads.)
+            if (external || target.has_feature(Target::ASAN)) {
                 base_b -= 1;
                 shifted_b = true;
             } else {
@@ -2662,6 +2725,13 @@ void CodeGen_LLVM::visit(const Call *op) {
     } else if (op->is_intrinsic(Call::size_of_halide_buffer_t)) {
         llvm::DataLayout d(module.get());
         value = ConstantInt::get(i32_t, (int)d.getTypeAllocSize(buffer_t_type));
+    } else if (op->is_intrinsic(Call::strict_float)) {
+        IRBuilder<llvm::ConstantFolder, llvm::IRBuilderDefaultInserter>::FastMathFlagGuard guard(*builder);
+        llvm::FastMathFlags safe_flags;
+        safe_flags.clear();
+        builder->setFastMathFlags(safe_flags);
+        builder->setDefaultFPMathTag(strict_fp_math_md);
+        value = codegen(op->args[0]);
     } else if (op->is_intrinsic()) {
         internal_error << "Unknown intrinsic: " << op->name << "\n";
     } else if (op->call_type == Call::PureExtern && op->name == "pow_f32") {
@@ -2682,6 +2752,23 @@ void CodeGen_LLVM::visit(const Call *op) {
                (op->name == "is_nan_f32" || op->name == "is_nan_f64")) {
         internal_assert(op->args.size() == 1);
         Value *a = codegen(op->args[0]);
+
+        /* NaNs are not supposed to exist in "no NaNs" compilation
+         * mode, but it appears llvm special cases the unordered
+         * compare instruction when the global NoNaNsFPMath option is
+         * set and still checks for a NaN. However if the nnan flag is
+         * set on the instruction itself, llvm treats the comparison
+         * as always false. Thus we always turn off the per-instruction
+         * fast-math flags for this instruction. I.e. it is always
+         * treated as strict. Note that compilation may still be in
+         * fast-math mode due to global options, but that's ok due to
+         * the aforementioned special casing. */
+        IRBuilder<llvm::ConstantFolder, llvm::IRBuilderDefaultInserter>::FastMathFlagGuard guard(*builder);
+        llvm::FastMathFlags safe_flags;
+        safe_flags.clear();
+        builder->setFastMathFlags(safe_flags);
+        builder->setDefaultFPMathTag(strict_fp_math_md);
+
         value = builder->CreateFCmpUNO(a, a);
     } else {
         // It's an extern call.
@@ -3522,4 +3609,5 @@ ModulusRemainder CodeGen_LLVM::get_alignment_info(Expr e) {
     return modulus_remainder(e, alignment_info);
 }
 
-}}
+}  // namespace Internal
+}  // namespace Halide

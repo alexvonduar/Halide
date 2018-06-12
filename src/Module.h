@@ -74,7 +74,7 @@ struct LoweredFunc {
                 NameMangling mangling = NameMangling::Default);
 };
 
-}
+}  // namespace Internal
 
 namespace Internal {
 struct ModuleContents;
@@ -98,6 +98,9 @@ public:
     /** If this Module had an auto-generated schedule, this is the C++ source
      * for that schedule. */
     const std::string &auto_schedule() const;
+
+    /** Return whether this module uses strict floating-point anywhere. */
+    bool any_strict_float() const;
 
     /** The declarations contained in this module. */
     // @{
@@ -143,6 +146,9 @@ public:
     /** Set the auto_schedule text for the Module. It is an error to call this
      * multiple times for a given Module. */
     void set_auto_schedule(const std::string &auto_schedule);
+
+    /** Set whether this module uses strict floating-point directives anywhere. */
+    void set_any_strict_float(bool any_strict_float);
 };
 
 /** Link a set of modules together into one module. */
@@ -166,6 +172,6 @@ void compile_multitarget(const std::string &fn_name,
                          ModuleProducer module_producer,
                          const std::map<std::string, std::string> &suffixes = {});
 
-}
+}  // namespace Halide
 
 #endif

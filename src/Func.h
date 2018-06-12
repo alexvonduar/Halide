@@ -6,18 +6,18 @@
  * Defines Func - the front-end handle on a halide function, and related classes.
  */
 
-#include "IR.h"
-#include "Var.h"
-#include "Function.h"
-#include "Param.h"
 #include "Argument.h"
-#include "RDom.h"
+#include "Function.h"
+#include "IR.h"
+#include "IROperator.h"
 #include "JITModule.h"
+#include "Module.h"
+#include "Param.h"
+#include "Pipeline.h"
+#include "RDom.h"
 #include "Target.h"
 #include "Tuple.h"
-#include "IROperator.h"
-#include "Module.h"
-#include "Pipeline.h"
+#include "Var.h"
 
 #include <map>
 
@@ -49,7 +49,7 @@ class ImageParam;
 namespace Internal {
 struct Split;
 struct StorageDim;
-}
+}  // namespace Internal
 
 /** A single definition of a Func. May be a pure or update definition. */
 class Stage {
@@ -331,7 +331,7 @@ public:
     Stage &reorder(const std::vector<VarOrRVar> &vars);
 
     template <typename... Args>
-    NO_INLINE typename std::enable_if<Internal::all_are_convertible<VarOrRVar, Args...>::value, Stage &>::type
+    HALIDE_NO_USER_CODE_INLINE typename std::enable_if<Internal::all_are_convertible<VarOrRVar, Args...>::value, Stage &>::type
     reorder(VarOrRVar x, VarOrRVar y, Args&&... args) {
         std::vector<VarOrRVar> collected_args{x, y, std::forward<Args>(args)...};
         return reorder(collected_args);
@@ -607,7 +607,7 @@ public:
 namespace Internal {
 struct ErrorBuffer;
 class IRMutator2;
-}
+}  // namespace Internal
 
 /** A halide function. This class represents one stage in a Halide
  * pipeline, and is the unit by which we schedule things. By default
@@ -660,7 +660,7 @@ public:
 
     /** Construct a new Func to wrap a Buffer. */
     template<typename T>
-    NO_INLINE explicit Func(Buffer<T> &im) : Func() {
+    HALIDE_NO_USER_CODE_INLINE explicit Func(Buffer<T> &im) : Func() {
         (*this)(_) = im(_);
     }
 
@@ -861,6 +861,12 @@ public:
                                  StmtOutputFormat fmt = Text,
                                  const Target &target = get_target_from_environment());
 
+    /** Emit a Python Extension glue .c file. */
+    void compile_to_python_extension(const std::string &filename_prefix,
+                                     const std::vector<Argument> &args,
+                                     const std::string &fn_name,
+                                     const Target &target = get_target_from_environment());
+
     /** Write out the loop nests specified by the schedule for this
      * Function. Helpful for understanding what a schedule is
      * doing. */
@@ -1027,18 +1033,15 @@ public:
     template<typename T>
     void add_custom_lowering_pass(T *pass) {
         // Template instantiate a custom deleter for this type, then
-        // cast it to a deleter that takes a IRMutator2 *. The custom
-        // deleter lives in user code, so that deletion is on the same
-        // heap as construction (I hate Windows).
-        void (*deleter)(Internal::IRMutator2 *) =
-            (void (*)(Internal::IRMutator2 *))(&delete_lowering_pass<T>);
-        add_custom_lowering_pass(pass, deleter);
+        // wrap in a lambda. The custom deleter lives in user code, so
+        // that deletion is on the same heap as construction (I hate Windows).
+        add_custom_lowering_pass(pass, [pass]() { delete_lowering_pass<T>(pass); });
     }
 
     /** Add a custom pass to be used during lowering, with the
      * function that will be called to delete it also passed in. Set
      * it to nullptr if you wish to retain ownership of the object. */
-    void add_custom_lowering_pass(Internal::IRMutator2 *pass, void (*deleter)(Internal::IRMutator2 *));
+    void add_custom_lowering_pass(Internal::IRMutator2 *pass, std::function<void()> deleter);
 
     /** Remove all previously-set custom lowering passes */
     void clear_custom_lowering_passes();
@@ -1196,8 +1199,8 @@ public:
                        const std::vector<Var> &arguments,
                        NameMangling mangling,
                        bool uses_old_buffer_t) {
-      define_extern(function_name, params, types,
-                    arguments, mangling, DeviceAPI::Host, uses_old_buffer_t);
+        define_extern(function_name, params, types,
+                      arguments, mangling, DeviceAPI::Host, uses_old_buffer_t);
     }
 
     void define_extern(const std::string &function_name,
@@ -1234,7 +1237,7 @@ public:
     FuncRef operator()(std::vector<Var>) const;
 
     template <typename... Args>
-    NO_INLINE typename std::enable_if<Internal::all_are_convertible<Var, Args...>::value, FuncRef>::type
+    HALIDE_NO_USER_CODE_INLINE typename std::enable_if<Internal::all_are_convertible<Var, Args...>::value, FuncRef>::type
     operator()(Args&&... args) const {
         std::vector<Var> collected_args{std::forward<Args>(args)...};
         return this->operator()(collected_args);
@@ -1251,7 +1254,7 @@ public:
     FuncRef operator()(std::vector<Expr>) const;
 
     template <typename... Args>
-    NO_INLINE typename std::enable_if<Internal::all_are_convertible<Expr, Args...>::value, FuncRef>::type
+    HALIDE_NO_USER_CODE_INLINE typename std::enable_if<Internal::all_are_convertible<Expr, Args...>::value, FuncRef>::type
     operator()(Expr x, Args&&... args) const {
         std::vector<Expr> collected_args{x, std::forward<Args>(args)...};
         return (*this)(collected_args);
@@ -1519,7 +1522,7 @@ public:
     Func &reorder(const std::vector<VarOrRVar> &vars);
 
     template <typename... Args>
-    NO_INLINE typename std::enable_if<Internal::all_are_convertible<VarOrRVar, Args...>::value, Func &>::type
+    HALIDE_NO_USER_CODE_INLINE typename std::enable_if<Internal::all_are_convertible<VarOrRVar, Args...>::value, Func &>::type
     reorder(VarOrRVar x, VarOrRVar y, Args&&... args) {
         std::vector<VarOrRVar> collected_args{x, y, std::forward<Args>(args)...};
         return reorder(collected_args);
@@ -1906,7 +1909,7 @@ public:
 
     Func &reorder_storage(Var x, Var y);
     template <typename... Args>
-    NO_INLINE typename std::enable_if<Internal::all_are_convertible<Var, Args...>::value, Func &>::type
+    HALIDE_NO_USER_CODE_INLINE typename std::enable_if<Internal::all_are_convertible<Var, Args...>::value, Func &>::type
     reorder_storage(Var x, Var y, Args&&... args) {
         std::vector<Var> collected_args{x, y, std::forward<Args>(args)...};
         return reorder_storage(collected_args);
@@ -2331,7 +2334,7 @@ inline void assign_results(Realization &r, int idx, First first, Second second, 
  * expression. This can be thought of as a scalar version of
  * \ref Func::realize */
 template<typename T>
-NO_INLINE T evaluate(Expr e) {
+HALIDE_NO_USER_CODE_INLINE T evaluate(Expr e) {
     user_assert(e.type() == type_of<T>())
         << "Can't evaluate expression "
         << e << " of type " << e.type()
@@ -2344,7 +2347,7 @@ NO_INLINE T evaluate(Expr e) {
 
 /** JIT-compile and run enough code to evaluate a Halide Tuple. */
 template <typename First, typename... Rest>
-NO_INLINE void evaluate(Tuple t, First first, Rest&&... rest) {
+HALIDE_NO_USER_CODE_INLINE void evaluate(Tuple t, First first, Rest&&... rest) {
     Internal::check_types<First, Rest...>(t, 0);
 
     Func f;
@@ -2374,7 +2377,7 @@ inline void schedule_scalar(Func f) {
  * specifies one.
  */
 template<typename T>
-NO_INLINE T evaluate_may_gpu(Expr e) {
+HALIDE_NO_USER_CODE_INLINE T evaluate_may_gpu(Expr e) {
     user_assert(e.type() == type_of<T>())
         << "Can't evaluate expression "
         << e << " of type " << e.type()
@@ -2390,7 +2393,7 @@ NO_INLINE T evaluate_may_gpu(Expr e) {
  *  use GPU if jit target from environment specifies one. */
 // @{
 template <typename First, typename... Rest>
-NO_INLINE void evaluate_may_gpu(Tuple t, First first, Rest&&... rest) {
+HALIDE_NO_USER_CODE_INLINE void evaluate_may_gpu(Tuple t, First first, Rest&&... rest) {
     Internal::check_types<First, Rest...>(t, 0);
 
     Func f;
@@ -2401,7 +2404,6 @@ NO_INLINE void evaluate_may_gpu(Tuple t, First first, Rest&&... rest) {
 }
 // @}
 
-}
-
+}  // namespace Halide
 
 #endif

@@ -473,7 +473,7 @@ struct Call : public ExprNode<Call> {
     // they can be referenced at static-initialization time without
     // risking ambiguous initalization order; we use a typedef to simplify
     // declaration.
-    typedef const char* const ConstString;
+    typedef const char *const ConstString;
     HALIDE_EXPORT static ConstString debug_to_file,
         reinterpret,
         bitwise_and,
@@ -516,7 +516,8 @@ struct Call : public ExprNode<Call> {
         select_mask,
         extract_mask_element,
         require,
-        size_of_halide_buffer_t;
+        size_of_halide_buffer_t,
+        strict_float;
 
     // We also declare some symbolic names for some of the runtime
     // functions that we want to construct Call nodes to here to avoid
@@ -686,7 +687,7 @@ struct Shuffle : public ExprNode<Shuffle> {
     std::vector<int> indices;
 
     static Expr make(const std::vector<Expr> &vectors,
-                            const std::vector<int> &indices);
+                     const std::vector<int> &indices);
 
     /** Convenience constructor for making a shuffle representing an
      * interleaving of vectors of the same length. */
@@ -734,17 +735,20 @@ struct Prefetch : public StmtNode<Prefetch> {
     std::string name;
     std::vector<Type> types;
     Region bounds;
+    PrefetchDirective prefetch;
+    Expr condition;
 
-    /** If it's a prefetch load from an image parameter, this points to that. */
-    Parameter param;
+    Stmt body;
 
     static Stmt make(const std::string &name, const std::vector<Type> &types,
-                     const Region &bounds, Parameter param = Parameter());
+                     const Region &bounds,
+                     const PrefetchDirective &prefetch,
+                     Expr condition, Stmt body);
 
     static const IRNodeType _node_type = IRNodeType::Prefetch;
 };
 
-}
-}
+}  // namespace Internal
+}  // namespace Halide
 
 #endif

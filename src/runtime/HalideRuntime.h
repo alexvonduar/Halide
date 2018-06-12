@@ -23,8 +23,10 @@ extern "C" {
 // it is not necessary, and may produce warnings for some build configurations.
 #ifdef _MSC_VER
 #define HALIDE_ALWAYS_INLINE __forceinline
+#define HALIDE_NEVER_INLINE __declspec(noinline)
 #else
 #define HALIDE_ALWAYS_INLINE __attribute__((always_inline)) inline
+#define HALIDE_NEVER_INLINE __attribute__((noinline))
 #endif
 
 /** \file
@@ -87,15 +89,11 @@ typedef void (*halide_error_handler_t)(void *, const char *);
 extern halide_error_handler_t halide_set_error_handler(halide_error_handler_t handler);
 // @}
 
-/** Cross-platform mutex. These are allocated statically inside the
- * runtime, hence the fixed size. They must be initialized with
- * zero. The first time halide_mutex_lock is called, the lock must be
- * initialized in a thread safe manner. This incurs a small overhead
- * for a once mechanism, but makes the lock reliably easy to setup and
- * use without depending on e.g. C++ constructor logic.
+/** Cross-platform mutex. Must be initialized with zero and implementation
+ * must treat zero as an unlocked mutex with no waiters, etc.
  */
 struct halide_mutex {
-    uint64_t _private[8];
+    uintptr_t _private[1];
 };
 
 /** A basic set of mutex and condition variable functions, which call
@@ -107,7 +105,6 @@ struct halide_mutex {
 //@{
 extern void halide_mutex_lock(struct halide_mutex *mutex);
 extern void halide_mutex_unlock(struct halide_mutex *mutex);
-extern void halide_mutex_destroy(struct halide_mutex *mutex);
 //@}
 
 /** Define halide_do_par_for to replace the default thread pool
@@ -575,7 +572,9 @@ struct halide_device_interface_t {
 /** Release all data associated with the given device interface, in
  * particular all resources (memory, texture, context handles)
  * allocated by Halide. Must be called explicitly when using AOT
- * compilation. */
+ * compilation. This is *not* thread-safe with respect to actively
+ * running Halide code. Ensure all pipelines are finished before
+ * calling this. */
 extern void halide_device_release(void *user_context,
                                   const struct halide_device_interface_t *device_interface);
 
@@ -1106,7 +1105,11 @@ typedef enum halide_target_feature_t {
     halide_target_feature_hvx_v65 = 47, ///< Enable Hexagon v65 architecture.
     halide_target_feature_hvx_v66 = 48, ///< Enable Hexagon v66 architecture.
     halide_target_feature_cl_half = 49,  ///< Enable half support on OpenCL targets
-    halide_target_feature_end = 50, ///< A sentinel. Every target is considered to have this feature, and setting this feature does nothing.
+    halide_target_feature_strict_float = 50, ///< Turn off all non-IEEE floating-point optimization. Currently applies only to LLVM targets.
+    halide_target_feature_legacy_buffer_wrappers = 51,  ///< Emit legacy wrapper code for buffer_t (vs halide_buffer_t) when AOT-compiled.
+    halide_target_feature_tsan = 52, ///< Enable hooks for TSAN support.
+    halide_target_feature_asan = 53, ///< Enable hooks for ASAN support.
+    halide_target_feature_end = 54 ///< A sentinel. Every target is considered to have this feature, and setting this feature does nothing.
 } halide_target_feature_t;
 
 /** This function is called internally by Halide in some situations to determine
@@ -1345,12 +1348,14 @@ typedef struct buffer_t {
 #endif // BUFFER_T_DEFINED
 
 /** Copies host pointer, mins, extents, strides, and device state from
- * an old-style buffer_t into a new-style halide_buffer_t. The
- * dimensions and type fields of the new buffer_t should already be
- * set. Returns an error code if the upgrade could not be
- * performed. */
+ * an old-style buffer_t into a new-style halide_buffer_t. If bounds_query_only is nonzero,
+ * the copy is only done if the old_buf has null host and dev (ie, a bounds query is being
+ * performed); otherwise new_buf is left untouched. (This is used for input buffers to avoid
+ * benign data races.) The dimensions and type fields of the new buffer_t should already be
+ * set. Returns an error code if the upgrade could not be performed. */
 extern int halide_upgrade_buffer_t(void *user_context, const char *name,
-                                   const buffer_t *old_buf, halide_buffer_t *new_buf);
+                                   const buffer_t *old_buf, halide_buffer_t *new_buf,
+                                   int bounds_query_only);
 
 /** Copies the host pointer, mins, extents, strides, and device state
  * from a halide_buffer_t to a buffer_t. Also sets elem_size. Useful

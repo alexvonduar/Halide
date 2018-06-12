@@ -5,8 +5,8 @@
  * Defines the internal representation of parameters to halide piplines
  */
 
-#include "Expr.h"
 #include "Buffer.h"
+#include "Expr.h"
 
 namespace Halide {
 
@@ -73,7 +73,7 @@ public:
     /** If the parameter is a scalar parameter, get its currently
      * bound value. Only relevant when jitting */
     template<typename T>
-    NO_INLINE T scalar() const {
+    HALIDE_NO_USER_CODE_INLINE T scalar() const {
         // Allow scalar<uint64_t>() for all Handle types
         user_assert(type() == type_of<T>() || (type().is_handle() && type_of<T>() == UInt(64)))
             << "Can't get Param<" << type()
@@ -88,7 +88,7 @@ public:
     /** If the parameter is a scalar parameter, set its current
      * value. Only relevant when jitting */
     template<typename T>
-    NO_INLINE void set_scalar(T val) {
+    HALIDE_NO_USER_CODE_INLINE void set_scalar(T val) {
         // Allow set_scalar<uint64_t>() for all Handle types
         user_assert(type() == type_of<T>() || (type().is_handle() && type_of<T>() == UInt(64)))
             << "Can't set Param<" << type()
@@ -98,7 +98,7 @@ public:
 
     /** If the parameter is a scalar parameter, set its current
      * value. Only relevant when jitting */
-    NO_INLINE void set_scalar(const Type &val_type, halide_scalar_value_t val) {
+    HALIDE_NO_USER_CODE_INLINE void set_scalar(const Type &val_type, halide_scalar_value_t val) {
         user_assert(type() == val_type || (type().is_handle() && val_type == UInt(64)))
             << "Can't set Param<" << type()
             << "> to scalar of type " << val_type << "\n";
@@ -193,7 +193,7 @@ public:
 /** Validate arguments to a call to a func, image or imageparam. */
 void check_call_arg_types(const std::string &name, std::vector<Expr> *args, int dims);
 
-}
-}
+}  // namespace Internal
+}  // namespace Halide
 
 #endif
